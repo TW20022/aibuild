@@ -15,4 +15,4 @@
 # echo 'src-git passwall https://github.com/xiaorouji/openwrt-passwall' >>feeds.conf.default
 
 # 确保打印机驱动相关的 packages 仓库处于激活状态
-# Lean 的源码默认已包含，这里作为预留接口
+echo 'src-git printing_packages https://github.com/woniuzfb/openwrt-24-printing-packages' >> feeds.conf.default
