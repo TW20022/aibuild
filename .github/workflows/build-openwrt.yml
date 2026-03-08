@@ -52,6 +52,8 @@ jobs:
           cd openwrt
           # 移除 feeds.conf.default 中旧的 printing_packages
           sed -i '/printing_packages/d' feeds.conf.default
+          # 删除已存在目录，避免 clone 失败
+          rm -rf package/printing_packages
           # 自定义 printing_packages 直接克隆到 package/
           git clone --depth 1 https://github.com/woniuzfb/openwrt-24-printing-packages package/printing_packages
           chmod +x $GITHUB_WORKSPACE/$DIY_P1_SH
