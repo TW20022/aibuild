@@ -43,7 +43,6 @@ jobs:
       - name: Clone source code
         working-directory: /workdir
         run: |
-          df -hT $PWD
           git clone $REPO_URL -b $REPO_BRANCH openwrt
           ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
@@ -53,7 +52,7 @@ jobs:
           # 移除 feeds.conf.default 中旧的 printing_packages
           sed -i '/printing_packages/d' feeds.conf.default
           # 删除已存在目录，避免 clone 报错
-          if [ -d package/printing_packages ]; then rm -rf package/printing_packages; fi
+          sudo rm -rf $GITHUB_WORKSPACE/openwrt/package/printing_packages
           # 克隆自定义 printing_packages
           git clone --depth 1 https://github.com/woniuzfb/openwrt-24-printing-packages package/printing_packages
           chmod +x $GITHUB_WORKSPACE/$DIY_P1_SH
