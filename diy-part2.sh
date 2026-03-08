@@ -6,8 +6,8 @@ sed -i 's/OpenWrt/JDCloud-Printer/g' package/base-files/files/bin/config_generat
 # 2. 针对 32MB 闪存的精确分区 (匹配你 mtd3 的 firmware 大小)
 # 设置内核分区为 4MB (给驱动留余量)
 sed -i 's/CONFIG_TARGET_KERNEL_PARTSIZE=.*$/CONFIG_TARGET_KERNEL_PARTSIZE=4/' .config
-# 设置 Rootfs 为 22MB (保守估计，确保 sysupgrade 不报错)
-sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*$/CONFIG_TARGET_ROOTFS_PARTSIZE=22/' .config
+# 设置 Rootfs 为160MB (只是为了生成ipk，生成的.bin文件不可以直接刷机)
+sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*$/CONFIG_TARGET_ROOTFS_PARTSIZE=160/' .config
 
 # 3. 无线配置 (CMCC-5G / 1234567890)
 sed -i 's/ssid=OpenWrt/ssid=CMCC-5G/g' package/kernel/mac80211/files/lib/wifi/mac80211.sh
