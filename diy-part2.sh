@@ -1,21 +1,20 @@
 #!/bin/bash
 
-# 1. 核心：放开根文件系统大小限制（设为 160MB 确保能装下 hplip 和 ghostscript）
-# 这步是为了让编译器“敢于”生成那几个巨大的 .ipk 文件
+# 1. 修改根分区大小为 160MB
 sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*$/CONFIG_TARGET_ROOTFS_PARTSIZE=160/' .config
 
-# 2.强制处理打印机包：物理拷贝大法
-mkdir -p package/custom_printing
-cp -r feeds/printing_packages/. package/custom_printing/
-
-# 3. 更新并安装 feeds（保持常规流程）
+# 2. 强制更新 feeds
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
-# 4. 自检（换个方式查，查物理路径）
-echo "======= 源码状态自检 ======="
-if [ -f "package/custom_printing/net/cups/Makefile" ] || [ -f "package/custom_printing/luci-app-cupsd/Makefile" ]; then
-    echo "✅ CUPS & Luci App 源码已强制就绪"
+# 3. 源码位置自检
+echo "======= 源码物理路径深度自检 ======="
+# 检查刚才 git clone 出来的 Makefile 到底在哪
+if [ -f "package/printing_packages/net/cups/Makefile" ]; then
+    echo "✅ 路径 1 (net/cups) 已就绪"
+elif [ -f "package/printing_packages/cups/Makefile" ]; then
+    echo "✅ 路径 2 (cups) 已就绪"
 else
-    echo "❌ 依然缺失，检查 diy-part1.sh 下载是否成功"
+    echo "❌ 依然缺失，请看下方 ls 输出结果"
+    ls -R package/printing_packages | head -n 20
 fi
