@@ -49,12 +49,12 @@ jobs:
 
       - name: Load custom feeds and printing packages
         run: |
-          cd openwrt
+          cd $GITHUB_WORKSPACE/openwrt
           # 移除 feeds.conf.default 中旧的 printing_packages
           sed -i '/printing_packages/d' feeds.conf.default
-          # 删除已存在目录，避免 clone 失败
-          rm -rf package/printing_packages
-          # 自定义 printing_packages 直接克隆到 package/
+          # 删除已存在目录，避免 clone 报错
+          if [ -d package/printing_packages ]; then rm -rf package/printing_packages; fi
+          # 克隆自定义 printing_packages
           git clone --depth 1 https://github.com/woniuzfb/openwrt-24-printing-packages package/printing_packages
           chmod +x $GITHUB_WORKSPACE/$DIY_P1_SH
           $GITHUB_WORKSPACE/$DIY_P1_SH
@@ -63,7 +63,7 @@ jobs:
 
       - name: Fix Python for MIPS 24kc
         run: |
-          cd openwrt
+          cd $GITHUB_WORKSPACE/openwrt
           # 强制使用 Python 3.10
           sed -i 's/^PKG_VERSION:=3.11.*/PKG_VERSION:=3.10.13/' package/lang/python3/Makefile
           # 跳过 dbus-python 测试，避免交叉编译报 LONG_BIT
@@ -71,9 +71,9 @@ jobs:
 
       - name: Load custom configuration
         run: |
-          [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
+          [ -e $CONFIG_FILE ] && cp $CONFIG_FILE $GITHUB_WORKSPACE/openwrt/.config
           chmod +x $DIY_P2_SH
-          cd openwrt
+          cd $GITHUB_WORKSPACE/openwrt
           $GITHUB_WORKSPACE/$DIY_P2_SH
           make defconfig
 
@@ -84,7 +84,7 @@ jobs:
       - name: Download package
         id: package
         run: |
-          cd openwrt
+          cd $GITHUB_WORKSPACE/openwrt
           make download -j8
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
@@ -92,7 +92,7 @@ jobs:
       - name: Compile the firmware
         id: compile
         run: |
-          cd openwrt
+          cd $GITHUB_WORKSPACE/openwrt
           echo -e "$(nproc) thread compile"
           make -j$(nproc) || make -j1 || make -j1 V=s
           echo "status=success" >> $GITHUB_OUTPUT
@@ -102,4 +102,4 @@ jobs:
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
         with:
           name: OpenWrt_firmware_JDCloud
-          path: openwrt/bin/targets/ramips/mt7621/
+          path: $GITHUB_WORKSPACE/openwrt/bin/targets/ramips/mt7621/
