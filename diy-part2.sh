@@ -4,24 +4,13 @@
 # 这步是为了让编译器“敢于”生成那几个巨大的 .ipk 文件
 sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*$/CONFIG_TARGET_ROOTFS_PARTSIZE=160/' .config
 
-# 2. 强制更新 Feeds 并安装打印机包定义
+# 2. 强制安装打印机相关包并覆盖默认冲突
 ./scripts/feeds update -a
+./scripts/feeds install -p printing_packages -f cups hplip ghostscript luci-app-cupsd
 ./scripts/feeds install -a
 
-# 3. 【自检环节】在编译日志里打印结果，方便你后期排查
-echo "======= 打印机源码拉取状态自检 ======="
-if [ -d "feeds/printing_packages/net/cups" ]; then
-    echo "✅ CUPS 源码已就绪"
-else
-    echo "❌ CUPS 源码缺失，请检查 diy-part1.sh"
-fi
-
-if [ -d "feeds/printing_packages/utils/hplip" ]; then
-    echo "✅ HPLIP 源码已就绪"
-else
-    echo "❌ HPLIP 源码缺失"
-fi
-echo "===================================="
+# 3. 极简自检
+[ -e "package/feeds/printing_packages/cups/Makefile" ] && echo "✅ CUPS Ready" || echo "❌ CUPS Missing"
 
 
 # 3. 修正 IP 和主机名
