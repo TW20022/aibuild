@@ -1,19 +1,17 @@
 #!/bin/bash
+# 1. 修改默认 IP (可选)
+# sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_generate
 
-# 1. 修改分区大小以容纳 Ghostscript 和 HPLIP
+# 2. 扩容 rootfs 分区到 160MB (满足 Ghostscript 体积需求)
 sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*$/CONFIG_TARGET_ROOTFS_PARTSIZE=160/' .config
 
-# 2. 注入 32位 架构参数到 python3-dbus (针对 MT7621)
-# 指南中虽未明说，但在 32位 MIPS 上这是必做的
+# 3. 注入 32位 MIPS 适配参数 (解决 python3-dbus 核心报错)
 find package/feeds/printing_packages/ -name Makefile -path "*/python3-dbus/*" -exec sed -i 's/CONFIGURE_VARS +=/CONFIGURE_VARS += py_cv_long_bit=32 /g' {} +
 
-# 3. 补充必要的依赖开关，确保 HPLIP 编译环境完整
-cat >> .config <<EOF
-CONFIG_PACKAGE_dbus=y
-CONFIG_PACKAGE_libdbus=y
-CONFIG_PACKAGE_python3-light=y
-CONFIG_PACKAGE_python3-base=y
-CONFIG_PACKAGE_python3-dbus=y
-CONFIG_PACKAGE_libcups=y
-CONFIG_PACKAGE_cups=y
-EOF
+# 4. 强制开启 Strip 模式减小二进制体积
+echo "CONFIG_USE_STRIP=y" >> .config
+echo "CONFIG_STRIP_KERNEL_EXPORTS=y" >> .config
+
+# 5. 确保核心打印依赖被勾选
+echo "CONFIG_PACKAGE_dbus=y" >> .config
+echo "CONFIG_PACKAGE_libdbus=y" >> .config
