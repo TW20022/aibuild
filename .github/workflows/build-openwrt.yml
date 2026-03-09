@@ -24,81 +24,69 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Initialization environment
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo -E apt-get -qq update
-          sudo -E apt-get -qq install $(curl -fsSL https://is.gd/depends_ubuntu_2204)
-          sudo -E apt-get -qq autoremove --purge
-          sudo -E apt-get -qq clean
-          sudo timedatectl set-timezone "$TZ"
-          sudo mkdir -p /workdir
-          sudo chown $USER:$USER /workdir
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install $(curl -fsSL https://is.gd/depends_ubuntu_2204)
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$USER /workdir
 
-      - name: Clone source code
-        working-directory: /workdir
-        run: |
-          git clone $REPO_URL -b $REPO_BRANCH openwrt
-          ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+    - name: Clone source code
+      working-directory: /workdir
+      run: |
+        df -hT $PWD
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
-      - name: Load custom feeds and printing packages
-        run: |
-          cd $GITHUB_WORKSPACE/openwrt
-          # 移除 feeds.conf.default 中旧的 printing_packages
-          sed -i '/printing_packages/d' feeds.conf.default
-          # 删除已存在目录，避免 clone 报错
-          sudo rm -rf $GITHUB_WORKSPACE/openwrt/package/printing_packages
-          # 克隆自定义 printing_packages
-          git clone --depth 1 https://github.com/woniuzfb/openwrt-24-printing-packages package/printing_packages
-          chmod +x $GITHUB_WORKSPACE/$DIY_P1_SH
-          $GITHUB_WORKSPACE/$DIY_P1_SH
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+    - name: Load custom feeds
+      run: |
+        [ -e $FEEDS_CONF ] && cp $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
 
-      - name: Fix Python for MIPS 24kc
-        run: |
-          cd $GITHUB_WORKSPACE/openwrt
-          # 强制使用 Python 3.10
-          sed -i 's/^PKG_VERSION:=3.11.*/PKG_VERSION:=3.10.13/' package/lang/python3/Makefile
-          # 跳过 dbus-python 测试，避免交叉编译报 LONG_BIT
-          sed -i '/test\/import-repeatedly.c/d' package/printing_packages/python3-dbus/Makefile || true
+    - name: Load custom configuration
+      run: |
+        [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
+        chmod +x $DIY_P2_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P2_SH
+        make defconfig
 
-      - name: Load custom configuration
-        run: |
-          [ -e $CONFIG_FILE ] && cp $CONFIG_FILE $GITHUB_WORKSPACE/openwrt/.config
-          chmod +x $DIY_P2_SH
-          cd $GITHUB_WORKSPACE/openwrt
-          $GITHUB_WORKSPACE/$DIY_P2_SH
-          make defconfig
+    - name: SSH connection to Actions
+      uses: P3TERX/ssh2actions@main
+      if: (github.event.inputs.ssh == 'true') || contains(github.event.action, 'ssh')
 
-      - name: SSH connection to Actions
-        uses: P3TERX/ssh2actions@main
-        if: (github.event.inputs.ssh == 'true') || contains(github.event.action, 'ssh')
+    - name: Download package
+      id: package
+      run: |
+        cd openwrt
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
 
-      - name: Download package
-        id: package
-        run: |
-          cd $GITHUB_WORKSPACE/openwrt
-          make download -j8
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
+    - name: Compile the firmware
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Compile the firmware
-        id: compile
-        run: |
-          cd $GITHUB_WORKSPACE/openwrt
-          echo -e "$(nproc) thread compile"
-          make -j$(nproc) || make -j1 || make -j1 V=s
-          echo "status=success" >> $GITHUB_OUTPUT
-
-      - name: Upload firmware directory
-        uses: actions/upload-artifact@v4
-        if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
-        with:
-          name: OpenWrt_firmware_JDCloud
-          path: $GITHUB_WORKSPACE/openwrt/bin/targets/ramips/mt7621/
+    - name: Upload firmware directory
+      uses: actions/upload-artifact@v4
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
+      with:
+        name: OpenWrt_firmware_JDCloud
+        path: openwrt/bin/targets/ramips/mt7621/
