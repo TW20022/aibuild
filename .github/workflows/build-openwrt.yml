@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       ssh:
-        description: '是否开启 SSH 远程配置 (true/false)'
+        description: 'SSH connection to Actions'
         required: false
-        default: 'false'
+        default: 'true'
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
@@ -17,6 +17,7 @@ env:
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
   UPLOAD_FIRMWARE: true
+  UPLOAD_BIN_DIR: false
   TZ: Asia/Shanghai
 
 jobs:
@@ -28,18 +29,16 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Initialization environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /usr/lib/jvm /usr/share/man
+        sudo docker image prune -a -f
         sudo -E apt-get -qq update
-        # 这里的 depends_ubuntu_2204 脚本会自动安装交叉编译所需的宿主机依赖
         sudo -E apt-get -qq install $(curl -fsSL https://is.gd/depends_ubuntu_2204)
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
-        sudo mkdir -p /workdir
-        sudo chown $USER:$USER /workdir
+        mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
 
     - name: Clone source code
       working-directory: /workdir
@@ -54,29 +53,29 @@ jobs:
         chmod +x $DIY_P1_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
+
+    - name: Update feeds
+      run: cd openwrt && ./scripts/feeds update -a
+
+    - name: Install feeds
+      run: cd openwrt && ./scripts/feeds install -a
 
     - name: Load custom configuration
       run: |
         [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
         chmod +x $DIY_P2_SH
         cd openwrt
-        # 在执行脚本前，先执行一次向 tools/pkgconf 注入补丁（指南要求）
-        sed -i '/--keep-system-cflags\|--keep-system-libs/d' tools/pkgconf/files/pkg-config || true
-        # 执行自定义脚本修改 .config 和 Makefile
         $GITHUB_WORKSPACE/$DIY_P2_SH
-        # 强制刷新配置并检查依赖
-        make defconfig
 
     - name: SSH connection to Actions
       uses: P3TERX/ssh2actions@main
-      if: (github.event.inputs.ssh == 'true') || contains(github.event.action, 'ssh')
+      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
 
     - name: Download package
       id: package
       run: |
         cd openwrt
+        make defconfig
         make download -j8
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
@@ -86,27 +85,29 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
-        
-        # 1. [核心步骤] 按照 woniuzfb 指南，优先编译工具链和目标架构基础
-        # 这能确保编译 python3-dbus 时 MIPS 的编译器环境已经完全 Ready
+        # 阶段1：全速编译工具链
         make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
-        make target/compile -j$(nproc) || make target/compile -j1 V=s
-        
-        # 2. [预防报错] 优先尝试编译容易挂掉的底层依赖
-        make package/libs/libdbus/compile -j$(nproc) V=s || true
-        
-        # 3. [尝试编译] 打印包中的 python3-dbus（单线程，避免竞争报错）
-        # 注意：路径需与你的 diy-part1 引入方式匹配
-        make package/feeds/printing_packages/python3-dbus/compile -j1 V=s || true
+        # 阶段2：稳健编译应用包 (针对 Python/HPLIP 封包 IO 保护)
+        make -j2 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-        # 4. 最后进行全量编译
-        make -j$(nproc) || make -j1 V=s
-        
+    - name: Organize files
+      id: organize
+      if: steps.compile.outputs.status == 'success' && !cancelled()
+      run: |
+        cd openwrt/bin/targets/ramips/mt7621
+        # 提取设备名称用于命名
+        echo "DEVICE_NAME=_jdcloud_re-sp-01b" >> $GITHUB_ENV
+        # 删除不需要的 packages 文件夹以减小体积
+        rm -rf packages
+        # 设置固件所在路径为环境变量
+        echo "FIRMWARE_PATH=$(pwd)" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload firmware directory
       uses: actions/upload-artifact@v4
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
+      if: steps.organize.outputs.status == 'success' && !cancelled()
       with:
-        name: OpenWrt_firmware_JDCloud
-        path: openwrt/bin/targets/ramips/mt7621/
+        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE_PATH }}
