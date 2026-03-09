@@ -33,6 +33,7 @@ jobs:
       run: |
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
         sudo -E apt-get -qq update
+        # 这里的 depends_ubuntu_2204 脚本会自动安装交叉编译所需的宿主机依赖
         sudo -E apt-get -qq install $(curl -fsSL https://is.gd/depends_ubuntu_2204)
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
@@ -61,7 +62,11 @@ jobs:
         [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
         chmod +x $DIY_P2_SH
         cd openwrt
+        # 在执行脚本前，先执行一次向 tools/pkgconf 注入补丁（指南要求）
+        sed -i '/--keep-system-cflags\|--keep-system-libs/d' tools/pkgconf/files/pkg-config || true
+        # 执行自定义脚本修改 .config 和 Makefile
         $GITHUB_WORKSPACE/$DIY_P2_SH
+        # 强制刷新配置并检查依赖
         make defconfig
 
     - name: SSH connection to Actions
@@ -81,7 +86,22 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
+        
+        # 1. [核心步骤] 按照 woniuzfb 指南，优先编译工具链和目标架构基础
+        # 这能确保编译 python3-dbus 时 MIPS 的编译器环境已经完全 Ready
+        make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+        make target/compile -j$(nproc) || make target/compile -j1 V=s
+        
+        # 2. [预防报错] 优先尝试编译容易挂掉的底层依赖
+        make package/libs/libdbus/compile -j$(nproc) V=s || true
+        
+        # 3. [尝试编译] 打印包中的 python3-dbus（单线程，避免竞争报错）
+        # 注意：路径需与你的 diy-part1 引入方式匹配
+        make package/feeds/printing_packages/python3-dbus/compile -j1 V=s || true
+
+        # 4. 最后进行全量编译
+        make -j$(nproc) || make -j1 V=s
+        
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload firmware directory
