@@ -1,17 +1,15 @@
 #!/bin/bash
-# 1. 修改默认 IP (可选)
-# sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_generate
+# 定位 HPLIP 路径 (根据 immortalwrt 目录结构)
+HPLIP_PATH="package/feeds/printing_packages/hplip"
 
-# 2. 扩容 rootfs 分区到 160MB (满足 Ghostscript 体积需求)
-sed -i 's/CONFIG_TARGET_ROOTFS_PARTSIZE=.*$/CONFIG_TARGET_ROOTFS_PARTSIZE=160/' .config
+# 1. 强行删除 Makefile 中的 Python 依赖，防止系统尝试安装 python3-dbus
+sed -i 's/+python3-mini//g' $HPLIP_PATH/Makefile
+sed -i 's/+python3//g' $HPLIP_PATH/Makefile
 
-# 3. 注入 32位 MIPS 适配参数 (解决 python3-dbus 核心报错)
-find package/feeds/printing_packages/ -name Makefile -path "*/python3-dbus/*" -exec sed -i 's/CONFIGURE_VARS +=/CONFIGURE_VARS += py_cv_long_bit=32 /g' {} +
-
-# 4. 强制开启 Strip 模式减小二进制体积
-echo "CONFIG_USE_STRIP=y" >> .config
-echo "CONFIG_STRIP_KERNEL_EXPORTS=y" >> .config
-
-# 5. 确保核心打印依赖被勾选
-echo "CONFIG_PACKAGE_dbus=y" >> .config
-echo "CONFIG_PACKAGE_libdbus=y" >> .config
+# 2. 修改配置参数：彻底禁用 Python、SANE(扫描) 和 GUI
+# 仅保留核心的 hpcups 安装
+sed -i 's/--enable-python-build/--disable-python-build/g' $HPLIP_PATH/Makefile
+sed -i 's/--enable-sane-build/--disable-sane-build/g' $HPLIP_PATH/Makefile
+sed -i 's/--enable-gui-build/--disable-gui-build/g' $HPLIP_PATH/Makefile
+sed -i 's/--enable-qt5/--disable-qt5/g' $HPLIP_PATH/Makefile
+sed -i 's/--enable-hpcups-install/--enable-hpcups-install/g' $HPLIP_PATH/Makefile
