@@ -7,7 +7,7 @@ on:
       ssh:
         description: 'SSH connection to Actions'
         required: false
-        default: 'true'
+        default: 'false'
 
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
@@ -16,8 +16,6 @@ env:
   CONFIG_FILE: .config
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
-  UPLOAD_FIRMWARE: true
-  UPLOAD_BIN_DIR: false
   TZ: Asia/Shanghai
 
 jobs:
@@ -69,7 +67,7 @@ jobs:
 
     - name: SSH connection to Actions
       uses: P3TERX/ssh2actions@main
-      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh  != 'false') || contains(github.event.action, 'ssh')
+      if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh != 'false') || contains(github.event.action, 'ssh')
 
     - name: Download package
       id: package
@@ -85,9 +83,9 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
-        # 阶段1：全速编译工具链
+        # 阶段1：编译工具链
         make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
-        # 阶段2：稳健编译应用包 (针对 Python/HPLIP 封包 IO 保护)
+        # 阶段2：全量包编译 (由于包含 Ghostscript，此处需要较长时间)
         make -j2 V=s
         echo "status=success" >> $GITHUB_OUTPUT
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
@@ -96,18 +94,25 @@ jobs:
       id: organize
       if: steps.compile.outputs.status == 'success' && !cancelled()
       run: |
-        cd openwrt/bin/targets/ramips/mt7621
-        # 提取设备名称用于命名
+        # 创建一个干净的输出目录
+        mkdir -p $GITHUB_WORKSPACE/outputs
+        
+        # 1. 拷贝固件镜像 (sysupgrade 和 kernel)
+        cp -f openwrt/bin/targets/ramips/mt7621/*.bin $GITHUB_WORKSPACE/outputs/
+        
+        # 2. 拷贝全量软件包目录 (不进行任何删除)
+        # 这将包含所有编译生成的 .ipk 文件，分门别类存放在子文件夹中
+        if [ -d "openwrt/bin/packages/" ]; then
+          cp -r openwrt/bin/packages/ $GITHUB_WORKSPACE/outputs/packages
+        fi
+        
         echo "DEVICE_NAME=_jdcloud_re-sp-01b" >> $GITHUB_ENV
-        # 删除不需要的 packages 文件夹以减小体积
-        rm -rf packages
-        # 设置固件所在路径为环境变量
-        echo "FIRMWARE_PATH=$(pwd)" >> $GITHUB_ENV
+        echo "FIRMWARE_PATH=$GITHUB_WORKSPACE/outputs" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload firmware directory
       uses: actions/upload-artifact@v4
       if: steps.organize.outputs.status == 'success' && !cancelled()
       with:
-        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        name: OpenWrt_Total_Package${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE_PATH }}
