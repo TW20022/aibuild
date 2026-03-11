@@ -1,4 +1,4 @@
-name: SDK Build HPLIP (Optimized)
+name: SDK Build HPLIP (Final Version)
 
 on:
   workflow_dispatch:
@@ -16,34 +16,39 @@ jobs:
           sudo apt-get -qq install build-essential libncurses5-dev libncursesw5-dev \
             zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip zstd
 
-      - name: Setup SDK (Silent Extraction)
+      - name: Setup SDK (Safe Renaming)
         run: |
           wget -q https://downloads.immortalwrt.org/releases/24.10.0/targets/ramips/mt7621/immortalwrt-sdk-24.10.0-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-          # 移除 -v，防止数万行日志冲爆控制台
           tar -I zstd -xf *.tar.zst
-          mv immortalwrt-sdk-* sdk
+          
+          # 关键：先删除压缩包，确保目录下只有一个匹配项
+          rm -f *.tar.zst
+          
+          # 寻找唯一的解压目录并重命名
+          SDK_DIR=$(ls -d immortalwrt-sdk-*)
+          mv "$SDK_DIR" sdk
           chmod -R +x sdk/scripts
 
-      - name: Update & Install Feeds (Safe Mode)
+      - name: Update & Install Feeds
         run: |
           cd sdk
-          # 核心修复：保留 SDK 官方源，将第三方打印源置于第一行 (最高优先级)
+          # 1. 注入打印仓库到首行
           sed -i '1i\src-git printing_packages https://github.com/woniuzfb/openwrt-24-printing-packages.git' feeds.conf.default
           
+          # 2. 更新并强制安装 printing_packages 及其依赖
           ./scripts/feeds update -a
+          ./scripts/feeds install -p printing_packages -a
           ./scripts/feeds install -a
 
-      - name: HPLIP Surgery (Bulletproof Regex)
+      - name: HPLIP Surgery (Precision Regex)
         run: |
           cd sdk
-          # 精准定位 hplip 真实目录
-          HPLIP_DIR=$(find feeds/ -path "*/hplip" -type d | head -n 1)
+          # 动态查找 Makefile 路径
+          MAKEFILE=$(find feeds/printing_packages/hplip -name "Makefile" | head -n 1)
           
-          if [ -d "$HPLIP_DIR" ]; then
-            echo "Successfully located HPLIP at: $HPLIP_DIR"
-            MAKEFILE="$HPLIP_DIR/Makefile"
-            
-            # 1. 彻底清除 Python 依赖
+          if [ -f "$MAKEFILE" ]; then
+            echo "Applying surgery to $MAKEFILE"
+            # A. 移除所有 Python 依赖
             sed -i 's/+python3-dbus//g' "$MAKEFILE"
             sed -i 's/+python3-distro//g' "$MAKEFILE"
             sed -i 's/+python3-mini//g' "$MAKEFILE"
@@ -51,33 +56,35 @@ jobs:
             sed -i 's/python3 //g' "$MAKEFILE"
             sed -i 's/PKG_BUILD_DEPENDS:=python3/PKG_BUILD_DEPENDS:=/g' "$MAKEFILE"
             
-            # 2. 核心修复：清理悬空的加号和空格，防止语法报错
+            # B. 清理悬空的加号和空格 (防止语法报错)
             sed -i 's/+[[:space:]]*+/+/g' "$MAKEFILE"
             sed -i 's/DEPENDS:=[[:space:]]*+/DEPENDS:=/g' "$MAKEFILE"
             
-            # 3. 强制极简编译与屏蔽宿主机探测
+            # C. 注入 Lite 编译参数
             sed -i '/--disable-fax-build/a \	--enable-lite-build \\\n	--disable-python-build \\\n	--disable-dbus-build' "$MAKEFILE"
+            
+            # D. 屏蔽宿主机 Python 探测
             sed -i 's|PYTHON=$(STAGING_DIR_HOSTPKG)/bin/python3|PYTHON=/usr/bin/python3|g' "$MAKEFILE"
             
-            # 4. 禁用子包
+            # E. 禁用 Scan 和 Tools 模块
             sed -i '/call BuildPackage,hplip-scan/s/^/#/' "$MAKEFILE"
             sed -i '/call BuildPackage,hplip-tools/s/^/#/' "$MAKEFILE"
-            
-            echo "Surgery completed."
           else
-            echo "ERROR: Could not find HPLIP directory!" && exit 1
+            echo "Error: HPLIP Makefile not found!" && exit 1
           fi
 
       - name: Compile HPLIP
         run: |
           cd sdk
+          # 强制选中 hplip 进行编译
+          echo "CONFIG_PACKAGE_hplip=y" >> .config
           make defconfig
-          # 使用 V=s 暴露可能的错误，同时开启多线程提速
+          # 仅编译 hplip 及其依赖包
           make package/hplip/compile V=s -j$(nproc)
 
-      - name: Upload Artifacts (Deep Catch)
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: hplip-ipk-mt7621
-          # 核心修复：使用 ** 递归匹配，防止 SDK 目录结构微调导致找不到包
-          path: sdk/bin/packages/**/hplip*.ipk
+          # 递归搜索所有生成的 ipk 文件
+          path: sdk/bin/packages/
