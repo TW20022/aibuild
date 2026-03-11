@@ -1,4 +1,4 @@
-name: SDK Build HPLIP (Fixed Syntax)
+name: SDK Build HPLIP (Fixed Syntax & Architecture)
 
 on:
   workflow_dispatch:
@@ -28,39 +28,41 @@ jobs:
       - name: Update & Install Feeds
         run: |
           cd sdk
+          # 强制使用你指定的 printing 仓库
           sed -i '1i\src-git printing_packages https://github.com/woniuzfb/openwrt-24-printing-packages.git' feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -p printing_packages -a
           ./scripts/feeds install -a
 
-      - name: HPLIP Surgery (Fix Makefile Syntax)
+      - name: HPLIP Surgery (Deep Fixes)
         run: |
           cd sdk
           MAKEFILE=$(find feeds/printing_packages/hplip -name "Makefile" | head -n 1)
           if [ -f "$MAKEFILE" ]; then
             echo "Repairing $MAKEFILE"
-            # 1. 移除 Python 依赖
-            sed -i 's/+python3-dbus//g' "$MAKEFILE"
-            sed -i 's/+python3-distro//g' "$MAKEFILE"
-            sed -i 's/+python3-mini//g' "$MAKEFILE"
-            sed -i 's/+python3//g' "$MAKEFILE"
-            sed -i 's/python3 //g' "$MAKEFILE"
+            
+            # 1. 彻底移除 Python 依赖（更鲁棒的正则）
+            sed -i 's/+python3[^ ]*//g' "$MAKEFILE"
+            sed -i 's/python3//g' "$MAKEFILE"
             sed -i 's/PKG_BUILD_DEPENDS:=python3/PKG_BUILD_DEPENDS:=/g' "$MAKEFILE"
             
-            # 2. 清理悬挂加号和多余空格
+            # 2. 清理 DEPENDS 悬挂符号（防止语法错误）
             sed -i 's/+[[:space:]]*+/+/g' "$MAKEFILE"
             sed -i 's/DEPENDS:=[[:space:]]*+/DEPENDS:=/g' "$MAKEFILE"
             
-            # 3. 核心修复：改用单行替换，避免破坏 Makefile 的换行结构
-            # 找到 --disable-fax-build 并替换为多个参数
-            sed -i 's/--disable-fax-build/--disable-fax-build --enable-lite-build --disable-python-build --disable-dbus-build/g' "$MAKEFILE"
+            # 3. 注入关键编译参数 (禁用 Scan, DBus, ImageProcessor, Python, Fax)
+            # 这里的顺序和完整性决定了 configure 是否报错
+            sed -i 's/--disable-fax-build/--disable-fax-build --disable-scan-build --disable-dbus-build --disable-python-build --disable-imageProcessor-build --enable-lite-build --enable-hpcups-install --disable-hpijs-install --disable-cups-ppd-install/g' "$MAKEFILE"
             
-            # 4. 屏蔽路径探测
+            # 4. 禁用不需要的子包定义，防止 install 阶段找不到文件
+            sed -i '/call BuildPackage,hplip-scan/d' "$MAKEFILE"
+            sed -i '/call BuildPackage,hplip-tools/d' "$MAKEFILE"
+            sed -i '/call BuildPackage,hplip-ppds/d' "$MAKEFILE"
+            
+            # 5. 欺骗 Python 路径探测
             sed -i 's|\$(STAGING_DIR_HOSTPKG)/bin/python3|/usr/bin/python3|g' "$MAKEFILE"
             
-            # 5. 禁用不需要的包
-            sed -i '/call BuildPackage,hplip-scan/s/^/#/' "$MAKEFILE"
-            sed -i '/call BuildPackage,hplip-tools/s/^/#/' "$MAKEFILE"
+            echo "Makefile patches applied successfully."
           else
             echo "Error: Makefile not found!" && exit 1
           fi
@@ -68,12 +70,17 @@ jobs:
       - name: Compile HPLIP
         run: |
           cd sdk
+          # 显式开启 HPLIP 及其核心库
           echo "CONFIG_PACKAGE_hplip=y" >> .config
+          echo "CONFIG_PACKAGE_libusb-1.0=y" >> .config
+          echo "CONFIG_PACKAGE_libcups=y" >> .config
           make defconfig
+          # 使用 V=s 观察详细日志，-j$(nproc) 加速
           make package/hplip/compile V=s -j$(nproc)
 
-      - name: Upload All Compiled Packages
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: hplip-package-mt7621
+          name: hplip-mt7621-lite
+          # 注意：路径可能根据 immortalwrt 的分类有所变化，这里用通配符更安全
           path: sdk/bin/packages/
