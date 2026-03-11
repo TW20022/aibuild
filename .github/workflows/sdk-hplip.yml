@@ -1,4 +1,4 @@
-name: SDK Build HPLIP (Final Version)
+name: SDK Build HPLIP (Fixed Syntax)
 
 on:
   workflow_dispatch:
@@ -20,11 +20,7 @@ jobs:
         run: |
           wget -q https://downloads.immortalwrt.org/releases/24.10.0/targets/ramips/mt7621/immortalwrt-sdk-24.10.0-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
           tar -I zstd -xf *.tar.zst
-          
-          # 关键：先删除压缩包，确保目录下只有一个匹配项
           rm -f *.tar.zst
-          
-          # 寻找唯一的解压目录并重命名
           SDK_DIR=$(ls -d immortalwrt-sdk-*)
           mv "$SDK_DIR" sdk
           chmod -R +x sdk/scripts
@@ -32,23 +28,18 @@ jobs:
       - name: Update & Install Feeds
         run: |
           cd sdk
-          # 1. 注入打印仓库到首行
           sed -i '1i\src-git printing_packages https://github.com/woniuzfb/openwrt-24-printing-packages.git' feeds.conf.default
-          
-          # 2. 更新并强制安装 printing_packages 及其依赖
           ./scripts/feeds update -a
           ./scripts/feeds install -p printing_packages -a
           ./scripts/feeds install -a
 
-      - name: HPLIP Surgery (Precision Regex)
+      - name: HPLIP Surgery (Fix Makefile Syntax)
         run: |
           cd sdk
-          # 动态查找 Makefile 路径
           MAKEFILE=$(find feeds/printing_packages/hplip -name "Makefile" | head -n 1)
-          
           if [ -f "$MAKEFILE" ]; then
-            echo "Applying surgery to $MAKEFILE"
-            # A. 移除所有 Python 依赖
+            echo "Repairing $MAKEFILE"
+            # 1. 移除 Python 依赖
             sed -i 's/+python3-dbus//g' "$MAKEFILE"
             sed -i 's/+python3-distro//g' "$MAKEFILE"
             sed -i 's/+python3-mini//g' "$MAKEFILE"
@@ -56,35 +47,33 @@ jobs:
             sed -i 's/python3 //g' "$MAKEFILE"
             sed -i 's/PKG_BUILD_DEPENDS:=python3/PKG_BUILD_DEPENDS:=/g' "$MAKEFILE"
             
-            # B. 清理悬空的加号和空格 (防止语法报错)
+            # 2. 清理悬挂加号和多余空格
             sed -i 's/+[[:space:]]*+/+/g' "$MAKEFILE"
             sed -i 's/DEPENDS:=[[:space:]]*+/DEPENDS:=/g' "$MAKEFILE"
             
-            # C. 注入 Lite 编译参数
-            sed -i '/--disable-fax-build/a \	--enable-lite-build \\\n	--disable-python-build \\\n	--disable-dbus-build' "$MAKEFILE"
+            # 3. 核心修复：改用单行替换，避免破坏 Makefile 的换行结构
+            # 找到 --disable-fax-build 并替换为多个参数
+            sed -i 's/--disable-fax-build/--disable-fax-build --enable-lite-build --disable-python-build --disable-dbus-build/g' "$MAKEFILE"
             
-            # D. 屏蔽宿主机 Python 探测
-            sed -i 's|PYTHON=$(STAGING_DIR_HOSTPKG)/bin/python3|PYTHON=/usr/bin/python3|g' "$MAKEFILE"
+            # 4. 屏蔽路径探测
+            sed -i 's|\$(STAGING_DIR_HOSTPKG)/bin/python3|/usr/bin/python3|g' "$MAKEFILE"
             
-            # E. 禁用 Scan 和 Tools 模块
+            # 5. 禁用不需要的包
             sed -i '/call BuildPackage,hplip-scan/s/^/#/' "$MAKEFILE"
             sed -i '/call BuildPackage,hplip-tools/s/^/#/' "$MAKEFILE"
           else
-            echo "Error: HPLIP Makefile not found!" && exit 1
+            echo "Error: Makefile not found!" && exit 1
           fi
 
       - name: Compile HPLIP
         run: |
           cd sdk
-          # 强制选中 hplip 进行编译
           echo "CONFIG_PACKAGE_hplip=y" >> .config
           make defconfig
-          # 仅编译 hplip 及其依赖包
           make package/hplip/compile V=s -j$(nproc)
 
-      - name: Upload Artifacts
+      - name: Upload All Compiled Packages
         uses: actions/upload-artifact@v4
         with:
-          name: hplip-ipk-mt7621
-          # 递归搜索所有生成的 ipk 文件
+          name: hplip-package-mt7621
           path: sdk/bin/packages/
