@@ -1,0 +1,84 @@
+name: SDK Build HPLIP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialization environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
+            zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip zstd
+
+      - name: Setup SDK
+        run: |
+          wget https://downloads.immortalwrt.org/releases/24.10.0/targets/ramips/mt7621/immortalwrt-sdk-24.10.0-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+          tar -I zstd -xvf *.tar.zst
+          mv immortalwrt-sdk-* sdk
+          # 赋予 SDK 内部脚本执行权限
+          chmod -R +x sdk/scripts
+
+      - name: Update & Install Feeds
+        run: |
+          cd sdk
+          # 注入仓库：printing_packages 优先级最高，同时引入官方基础库
+          echo "src-git printing_packages https://github.com/woniuzfb/openwrt-24-printing-packages.git" > feeds.conf.default
+          echo "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
+          echo "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
+          
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: HPLIP Surgery (Dynamic Path Search)
+        run: |
+          cd sdk
+          # 动态查找 hplip 目录，避开硬编码路径错误
+          HPLIP_DIR=$(find feeds/ -name "hplip" -type d | head -n 1)
+          
+          if [ -d "$HPLIP_DIR" ]; then
+            echo "Successfully located HPLIP at: $HPLIP_DIR"
+            MAKEFILE="$HPLIP_DIR/Makefile"
+            
+            # 1. 彻底去 Python 化 (移除依赖)
+            sed -i 's/python3-dbus//g' "$MAKEFILE"
+            sed -i 's/python3-distro//g' "$MAKEFILE"
+            sed -i 's/python3-mini//g' "$MAKEFILE"
+            sed -i 's/python3 //g' "$MAKEFILE"
+            sed -i 's/PKG_BUILD_DEPENDS:=python3/PKG_BUILD_DEPENDS:=/' "$MAKEFILE"
+            
+            # 2. 强制极简编译 (配置注入)
+            # 在已知参数后追加 Lite 模式开关
+            sed -i '/--disable-fax-build/a \	--enable-lite-build \\\n	--disable-python-build \\\n	--disable-dbus-build' "$MAKEFILE"
+            
+            # 3. 拦截宿主机探测 (预防 LONG_BIT 报错)
+            sed -i 's|PYTHON=$(STAGING_DIR_HOSTPKG)/bin/python3|PYTHON=/usr/bin/python3|g' "$MAKEFILE"
+            
+            # 4. 禁用多余子包安装逻辑
+            sed -i '/call BuildPackage,hplip-scan/s/^/#/' "$MAKEFILE"
+            sed -i '/call BuildPackage,hplip-tools/s/^/#/' "$MAKEFILE"
+            
+            echo "Patch applied to $MAKEFILE"
+          else
+            echo "ERROR: Could not find HPLIP directory!" && exit 1
+          fi
+
+      - name: Compile HPLIP
+        run: |
+          cd sdk
+          # 强制生成 .config 并选中 hplip
+          make defconfig
+          # 仅编译 hplip 及其直接依赖，开启详细日志
+          make package/hplip/compile V=s -j$(nproc)
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hplip-ipk-mt7621
+          # 自动匹配生成的 ipk
+          path: sdk/bin/packages/mipsel_24kc/printing_packages/hplip*.ipk
