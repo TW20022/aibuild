@@ -1,4 +1,4 @@
-name: SDK Build HPLIP
+name: SDK Build HPLIP (Optimized)
 
 on:
   workflow_dispatch:
@@ -12,58 +12,58 @@ jobs:
 
       - name: Initialization environment
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
+          sudo apt-get -qq update
+          sudo apt-get -qq install build-essential libncurses5-dev libncursesw5-dev \
             zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip zstd
 
-      - name: Setup SDK
+      - name: Setup SDK (Silent Extraction)
         run: |
-          wget https://downloads.immortalwrt.org/releases/24.10.0/targets/ramips/mt7621/immortalwrt-sdk-24.10.0-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-          tar -I zstd -xvf *.tar.zst
+          wget -q https://downloads.immortalwrt.org/releases/24.10.0/targets/ramips/mt7621/immortalwrt-sdk-24.10.0-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+          # 移除 -v，防止数万行日志冲爆控制台
+          tar -I zstd -xf *.tar.zst
           mv immortalwrt-sdk-* sdk
-          # 赋予 SDK 内部脚本执行权限
           chmod -R +x sdk/scripts
 
-      - name: Update & Install Feeds
+      - name: Update & Install Feeds (Safe Mode)
         run: |
           cd sdk
-          # 注入仓库：printing_packages 优先级最高，同时引入官方基础库
-          echo "src-git printing_packages https://github.com/woniuzfb/openwrt-24-printing-packages.git" > feeds.conf.default
-          echo "src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10" >> feeds.conf.default
-          echo "src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10" >> feeds.conf.default
+          # 核心修复：保留 SDK 官方源，将第三方打印源置于第一行 (最高优先级)
+          sed -i '1i\src-git printing_packages https://github.com/woniuzfb/openwrt-24-printing-packages.git' feeds.conf.default
           
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: HPLIP Surgery (Dynamic Path Search)
+      - name: HPLIP Surgery (Bulletproof Regex)
         run: |
           cd sdk
-          # 动态查找 hplip 目录，避开硬编码路径错误
-          HPLIP_DIR=$(find feeds/ -name "hplip" -type d | head -n 1)
+          # 精准定位 hplip 真实目录
+          HPLIP_DIR=$(find feeds/ -path "*/hplip" -type d | head -n 1)
           
           if [ -d "$HPLIP_DIR" ]; then
             echo "Successfully located HPLIP at: $HPLIP_DIR"
             MAKEFILE="$HPLIP_DIR/Makefile"
             
-            # 1. 彻底去 Python 化 (移除依赖)
-            sed -i 's/python3-dbus//g' "$MAKEFILE"
-            sed -i 's/python3-distro//g' "$MAKEFILE"
-            sed -i 's/python3-mini//g' "$MAKEFILE"
+            # 1. 彻底清除 Python 依赖
+            sed -i 's/+python3-dbus//g' "$MAKEFILE"
+            sed -i 's/+python3-distro//g' "$MAKEFILE"
+            sed -i 's/+python3-mini//g' "$MAKEFILE"
+            sed -i 's/+python3//g' "$MAKEFILE"
             sed -i 's/python3 //g' "$MAKEFILE"
-            sed -i 's/PKG_BUILD_DEPENDS:=python3/PKG_BUILD_DEPENDS:=/' "$MAKEFILE"
+            sed -i 's/PKG_BUILD_DEPENDS:=python3/PKG_BUILD_DEPENDS:=/g' "$MAKEFILE"
             
-            # 2. 强制极简编译 (配置注入)
-            # 在已知参数后追加 Lite 模式开关
+            # 2. 核心修复：清理悬空的加号和空格，防止语法报错
+            sed -i 's/+[[:space:]]*+/+/g' "$MAKEFILE"
+            sed -i 's/DEPENDS:=[[:space:]]*+/DEPENDS:=/g' "$MAKEFILE"
+            
+            # 3. 强制极简编译与屏蔽宿主机探测
             sed -i '/--disable-fax-build/a \	--enable-lite-build \\\n	--disable-python-build \\\n	--disable-dbus-build' "$MAKEFILE"
-            
-            # 3. 拦截宿主机探测 (预防 LONG_BIT 报错)
             sed -i 's|PYTHON=$(STAGING_DIR_HOSTPKG)/bin/python3|PYTHON=/usr/bin/python3|g' "$MAKEFILE"
             
-            # 4. 禁用多余子包安装逻辑
+            # 4. 禁用子包
             sed -i '/call BuildPackage,hplip-scan/s/^/#/' "$MAKEFILE"
             sed -i '/call BuildPackage,hplip-tools/s/^/#/' "$MAKEFILE"
             
-            echo "Patch applied to $MAKEFILE"
+            echo "Surgery completed."
           else
             echo "ERROR: Could not find HPLIP directory!" && exit 1
           fi
@@ -71,14 +71,13 @@ jobs:
       - name: Compile HPLIP
         run: |
           cd sdk
-          # 强制生成 .config 并选中 hplip
           make defconfig
-          # 仅编译 hplip 及其直接依赖，开启详细日志
+          # 使用 V=s 暴露可能的错误，同时开启多线程提速
           make package/hplip/compile V=s -j$(nproc)
 
-      - name: Upload Artifacts
+      - name: Upload Artifacts (Deep Catch)
         uses: actions/upload-artifact@v4
         with:
           name: hplip-ipk-mt7621
-          # 自动匹配生成的 ipk
-          path: sdk/bin/packages/mipsel_24kc/printing_packages/hplip*.ipk
+          # 核心修复：使用 ** 递归匹配，防止 SDK 目录结构微调导致找不到包
+          path: sdk/bin/packages/**/hplip*.ipk
