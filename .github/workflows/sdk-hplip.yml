@@ -1,4 +1,4 @@
-name: SDK Build HPLIP (Fixed Syntax & Architecture)
+name: SDK Build HPLIP 1.1 (Stable Fix)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
           sudo apt-get -qq install build-essential libncurses5-dev libncursesw5-dev \
             zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip zstd
 
-      - name: Setup SDK (Safe Renaming)
+      - name: Setup SDK (ImmortalWrt 24.10 MT7621)
         run: |
           wget -q https://downloads.immortalwrt.org/releases/24.10.0/targets/ramips/mt7621/immortalwrt-sdk-24.10.0-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
           tar -I zstd -xf *.tar.zst
@@ -28,41 +28,46 @@ jobs:
       - name: Update & Install Feeds
         run: |
           cd sdk
-          # 强制使用你指定的 printing 仓库
           sed -i '1i\src-git printing_packages https://github.com/woniuzfb/openwrt-24-printing-packages.git' feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -p printing_packages -a
           ./scripts/feeds install -a
 
-      - name: HPLIP Surgery (Deep Fixes)
+      - name: HPLIP Surgery (SDK 1.1 - Precision Surgery)
         run: |
           cd sdk
           MAKEFILE=$(find feeds/printing_packages/hplip -name "Makefile" | head -n 1)
           if [ -f "$MAKEFILE" ]; then
-            echo "Repairing $MAKEFILE"
+            echo "Applying Surgery 1.1 to $MAKEFILE"
             
-            # 1. 彻底移除 Python 依赖（更鲁棒的正则）
-            sed -i 's/+python3[^ ]*//g' "$MAKEFILE"
-            sed -i 's/python3//g' "$MAKEFILE"
+            # 1. 精准移除软件包依赖（只动 DEPENDS 行，不动 include 行）
+            # 使用更严谨的正则，防止误伤路径名
+            sed -i 's/+python3-dbus//g' "$MAKEFILE"
+            sed -i 's/+python3-distro//g' "$MAKEFILE"
+            sed -i 's/+python3-mini//g' "$MAKEFILE"
+            sed -i 's/+python3//g' "$MAKEFILE"
+            
+            # 2. 彻底注释掉导致 Error 2 的 Python 版本文件引用
+            # 这是修复 "No such file or directory" 的关键
+            sed -i 's|^include .*/lang/python/python3-version.mk|# &|' "$MAKEFILE"
+            
+            # 3. 移除编译阶段的依赖
             sed -i 's/PKG_BUILD_DEPENDS:=python3/PKG_BUILD_DEPENDS:=/g' "$MAKEFILE"
             
-            # 2. 清理 DEPENDS 悬挂符号（防止语法错误）
+            # 4. 强制配置极简模式 (包含 ImageProcessor 和 Scan 禁用)
+            sed -i 's/--disable-fax-build/--disable-fax-build --disable-scan-build --disable-dbus-build --disable-python-build --disable-imageProcessor-build --disable-policykit --enable-lite-build --enable-hpcups-install --disable-hpijs-install --disable-cups-ppd-install/g' "$MAKEFILE"
+            
+            # 5. 清理 DEPENDS 里的悬挂 + 号和空格
             sed -i 's/+[[:space:]]*+/+/g' "$MAKEFILE"
             sed -i 's/DEPENDS:=[[:space:]]*+/DEPENDS:=/g' "$MAKEFILE"
+            sed -i 's/+[[:space:]]*$//g' "$MAKEFILE"
             
-            # 3. 注入关键编译参数 (禁用 Scan, DBus, ImageProcessor, Python, Fax)
-            # 这里的顺序和完整性决定了 configure 是否报错
-            sed -i 's/--disable-fax-build/--disable-fax-build --disable-scan-build --disable-dbus-build --disable-python-build --disable-imageProcessor-build --enable-lite-build --enable-hpcups-install --disable-hpijs-install --disable-cups-ppd-install/g' "$MAKEFILE"
-            
-            # 4. 禁用不需要的子包定义，防止 install 阶段找不到文件
+            # 6. 删除不必要的子包 Build 规则，防止 install 报错
             sed -i '/call BuildPackage,hplip-scan/d' "$MAKEFILE"
             sed -i '/call BuildPackage,hplip-tools/d' "$MAKEFILE"
             sed -i '/call BuildPackage,hplip-ppds/d' "$MAKEFILE"
             
-            # 5. 欺骗 Python 路径探测
-            sed -i 's|\$(STAGING_DIR_HOSTPKG)/bin/python3|/usr/bin/python3|g' "$MAKEFILE"
-            
-            echo "Makefile patches applied successfully."
+            echo "Surgery 1.1 Done."
           else
             echo "Error: Makefile not found!" && exit 1
           fi
@@ -70,17 +75,14 @@ jobs:
       - name: Compile HPLIP
         run: |
           cd sdk
-          # 显式开启 HPLIP 及其核心库
           echo "CONFIG_PACKAGE_hplip=y" >> .config
           echo "CONFIG_PACKAGE_libusb-1.0=y" >> .config
           echo "CONFIG_PACKAGE_libcups=y" >> .config
           make defconfig
-          # 使用 V=s 观察详细日志，-j$(nproc) 加速
           make package/hplip/compile V=s -j$(nproc)
 
-      - name: Upload Artifacts
+      - name: Upload All Compiled Packages
         uses: actions/upload-artifact@v4
         with:
-          name: hplip-mt7621-lite
-          # 注意：路径可能根据 immortalwrt 的分类有所变化，这里用通配符更安全
+          name: sdk-1.1-hplip-mt7621
           path: sdk/bin/packages/
