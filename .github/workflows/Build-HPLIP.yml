@@ -1,0 +1,91 @@
+name: SDK Build HPLIP 1.2 (Official Feed - Bulletproof)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialization environment
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install build-essential libncurses5-dev libncursesw5-dev \
+            zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip zstd
+
+      - name: Setup SDK (ImmortalWrt 24.10 MT7621)
+        run: |
+          wget -q https://downloads.immortalwrt.org/releases/24.10.0/targets/ramips/mt7621/immortalwrt-sdk-24.10.0-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+          tar -I zstd -xf *.tar.zst
+          rm -f *.tar.zst
+          SDK_DIR=$(ls -d immortalwrt-sdk-*)
+          mv "$SDK_DIR" sdk
+          chmod -R +x sdk/scripts
+
+      - name: Update & Install Official Feeds
+        run: |
+          cd sdk
+          ./scripts/feeds update -a
+          # 直接从官方 packages 源拉取，保证补丁和环境 100% 契合
+          ./scripts/feeds install -a
+
+      - name: HPLIP Surgery (SDK 1.2 - Precision Strikes)
+        run: |
+          cd sdk
+          # 官方的 hplip 通常在 feeds/packages/utils/hplip
+          MAKEFILE=$(find feeds/packages/utils/hplip -name "Makefile" | head -n 1)
+          
+          if [ -f "$MAKEFILE" ]; then
+            echo "Applying strict Surgery 1.2 to $MAKEFILE"
+            
+            # 1. 核心翻转：把官方的 disable 改为 enable，召唤 hpcups 驱动！
+            sed -i 's/--disable-hpcups-install/--enable-hpcups-install/g' "$MAKEFILE"
+            
+            # 2. 注入架构保护和剥离参数
+            # 官方已经有了 --enable-lite-build，我们跟在它后面追加禁用项
+            sed -i 's/--enable-lite-build/--enable-lite-build --disable-imageProcessor-build --disable-scan-build --disable-python-build/g' "$MAKEFILE"
+            
+            # 3. 精准清除 Python 依赖 (防止残留加号和空格)
+            sed -i 's/+python3-light//g' "$MAKEFILE"
+            sed -i 's/+python3-base//g' "$MAKEFILE"
+            sed -i 's/+python3//g' "$MAKEFILE"
+            sed -i 's/PKG_BUILD_DEPENDS:=python3/PKG_BUILD_DEPENDS:=/g' "$MAKEFILE"
+            sed -i 's/PKG_BUILD_DEPENDS:=.*python.*//g' "$MAKEFILE"
+            
+            # 4. 屏蔽官方的 Python mk 文件引用 (防御 "No such file" 报错)
+            sed -i 's|^include .*/python3-version\.mk|# &|' "$MAKEFILE"
+            sed -i 's|^include .*/python3-package\.mk|# &|' "$MAKEFILE"
+            
+            # 5. 删除 hplip-sane 的编译指令，防止打包阶段找 sane 库报错
+            sed -i '/call BuildPackage,hplip-sane/d' "$MAKEFILE"
+            
+            # 6. 语法修复：清理 DEPENDS 里面因为删除 python 留下的多余加号
+            sed -i 's/+[[:space:]]*+/+/g' "$MAKEFILE"
+            sed -i 's/DEPENDS:=[[:space:]]*+/DEPENDS:=/g' "$MAKEFILE"
+            sed -i 's/+[[:space:]]*$//g' "$MAKEFILE"
+            
+            echo "Strict Surgery 1.2 Done."
+          else
+            echo "Error: Official Makefile not found!" && exit 1
+          fi
+
+      - name: Compile HPLIP
+        run: |
+          cd sdk
+          # 官方包的主程序叫做 hplip-common
+          echo "CONFIG_PACKAGE_hplip-common=y" >> .config
+          echo "CONFIG_PACKAGE_libusb-1.0=y" >> .config
+          echo "CONFIG_PACKAGE_libcups=y" >> .config
+          make defconfig
+          # 编译官方目录下的 hplip
+          make package/feeds/packages/hplip/compile V=s -j$(nproc)
+
+      - name: Upload All Compiled Packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-1.2-hplip-mt7621-official
+          # 上传所有生成的文件，由你自己来确认内部包含的 ipk 和结构
+          path: sdk/bin/packages/
