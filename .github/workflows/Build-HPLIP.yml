@@ -1,7 +1,10 @@
-name: SDK Build HPLIP 1.3 (Interception Strike)
+name: Compile HPLIP for OpenWrt - SDK 1.5
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   build:
@@ -12,74 +15,73 @@ jobs:
 
       - name: Initialization environment
         run: |
-          sudo apt-get -qq update
-          sudo apt-get -qq install build-essential libncurses5-dev libncursesw5-dev \
-            zlib1g-dev gawk git gettext libssl-dev xsltproc rsync wget unzip zstd
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
+            zlib1g-dev gawk git gettext libssl-dev xsltproc wget unzip python3
 
-      - name: Setup SDK (ImmortalWrt 24.10 MT7621)
+      - name: Download and Setup SDK
         run: |
-          wget -q https://downloads.immortalwrt.org/releases/24.10.0/targets/ramips/mt7621/immortalwrt-sdk-24.10.0-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-          tar -I zstd -xf *.tar.zst
-          rm -f *.tar.zst
-          SDK_DIR=$(ls -d immortalwrt-sdk-*)
-          mv "$SDK_DIR" sdk
-          chmod -R +x sdk/scripts
+          # 请确保此处 URL 为你实际使用的 mt7621 SDK 下载地址
+          wget https://downloads.immortalwrt.org/releases/23.05.3/targets/ramips/mt7621/immortalwrt-sdk-23.05.3-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.xz
+          tar -xJf *.tar.xz
+          mv *-sdk-* sdk
 
-      - name: Update & Install Official Feeds
+      - name: Update and Install Feeds
         run: |
           cd sdk
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: HPLIP Surgery (SDK 1.3 - OpenWrt Makefile Edit)
+      - name: HPLIP Surgery (SDK 1.5 - Dummy Library Strategy)
         run: |
           cd sdk
-          MAKEFILE=$(find feeds/packages/utils/hplip -name "Makefile" | head -n 1)
           
-          if [ -f "$MAKEFILE" ]; then
-            echo "Applying Surgery 1.3 to $MAKEFILE"
-            # 开启 hpcups 驱动安装
-            sed -i 's/--disable-hpcups-install/--enable-hpcups-install/g' "$MAKEFILE"
-            # 注入禁用参数
-            sed -i 's/--enable-lite-build/--enable-lite-build --disable-imageProcessor-build --disable-scan-build --disable-python-build/g' "$MAKEFILE"
-            # 剥离 Python 依赖
-            sed -i 's/+python3-light//g' "$MAKEFILE"
-            sed -i 's/+python3-base//g' "$MAKEFILE"
-            sed -i 's/+python3//g' "$MAKEFILE"
-            sed -i 's/PKG_BUILD_DEPENDS:=python3/PKG_BUILD_DEPENDS:=/g' "$MAKEFILE"
-            sed -i 's/PKG_BUILD_DEPENDS:=.*python.*//g' "$MAKEFILE"
-            sed -i 's|^include .*/python3-version\.mk|# &|' "$MAKEFILE"
-            sed -i 's|^include .*/python3-package\.mk|# &|' "$MAKEFILE"
-            sed -i '/call BuildPackage,hplip-sane/d' "$MAKEFILE"
-            sed -i 's/+[[:space:]]*+/+/g' "$MAKEFILE"
-            sed -i 's/DEPENDS:=[[:space:]]*+/DEPENDS:=/g' "$MAKEFILE"
-            sed -i 's/+[[:space:]]*$//g' "$MAKEFILE"
-          else
-            echo "Error: Official Makefile not found!" && exit 1
-          fi
+          # 1. 修改 Makefile 编译参数，强制关闭 ImageProcessor 和 Python
+          MAKEFILE=$(find feeds/packages/utils/hplip -name "Makefile" | head -n 1)
+          sed -i 's/--disable-hpcups-install/--enable-hpcups-install/g' "$MAKEFILE"
+          sed -i 's/--enable-lite-build/--enable-lite-build --disable-imageProcessor-build --disable-scan-build --disable-python-build/g' "$MAKEFILE"
+          sed -i 's/+python3-light//g' "$MAKEFILE"
+          sed -i 's/+python3//g' "$MAKEFILE"
 
-      - name: Compile HPLIP with Interception
+          # 2. 预处理：释放源码包
+          make package/feeds/packages/hplip/prepare V=s
+
+          # 3. 核心手术：伪造 MIPS 架构的影子库
+          # 找到源码目录（如 build_dir/target-mipsel_24kc_musl/hplip-3.23.12）
+          HPLIP_SRC_DIR=$(find build_dir/target-mipsel_24kc_musl/ -name "hplip-*" -type d | head -n 1)
+          
+          echo "void dummy_symbol() {}" > "$HPLIP_SRC_DIR/dummy.c"
+          
+          # 使用 SDK 内部的交叉编译器生成 .so 文件
+          ./staging_dir/toolchain-mipsel_24kc_gcc-13.3.0_musl/bin/mipsel-openwrt-linux-musl-gcc \
+            -shared -fPIC "$HPLIP_SRC_DIR/dummy.c" -o "$HPLIP_SRC_DIR/prnt/hpcups/libImageProcessor.so"
+          
+          echo "=> 影子库已生成 at: $HPLIP_SRC_DIR/prnt/hpcups/libImageProcessor.so"
+          
+          # 4. 彻底清理 Makefile 和 configure 中的链接残留
+          find "$HPLIP_SRC_DIR" -type f \( -name "Makefile*" -o -name "configure*" \) -exec sed -i 's/-lImageProcessor//g' {} +
+
+      - name: Configure and Compile
         run: |
           cd sdk
+          # 选中必要依赖
           echo "CONFIG_PACKAGE_hplip-common=y" >> .config
           echo "CONFIG_PACKAGE_libusb-1.0=y" >> .config
           echo "CONFIG_PACKAGE_libcups=y" >> .config
+          echo "CONFIG_PACKAGE_libjpeg-turbo=y" >> .config
+          
           make defconfig
-          
-          echo "=> 1. Unpack and Apply Official Patches (Prepare Phase)"
-          make package/feeds/packages/hplip/prepare V=s
-          
-          echo "=> 2. Source Code Interception (Destroy ImageProcessor)"
-          # 物理删除 HP 夹带的不兼容预编译库
-          find build_dir/ -name "libImageProcessor.so*" -delete
-          # 强行从所有底层构建脚本中抹除链接指令，彻底断绝念想
-          find build_dir/ -type f \( -name "configure" -o -name "Makefile.in" -o -name "Makefile.am" -o -name "*.mk" \) -exec sed -i 's/-lImageProcessor//g' {} +
-          
-          echo "=> 3. Resume Compilation (Configure & Compile)"
+          # 执行最终编译
           make package/feeds/packages/hplip/compile V=s -j$(nproc)
 
-      - name: Upload All Compiled Packages
+      - name: Collect and Upload Artifacts
+        run: |
+          mkdir -p ./output
+          # 收集所有生成的 .ipk 文件以便手动确认
+          find sdk/bin/ -name "*.ipk" -exec cp {} ./output/ \;
+          
+      - name: Upload to Actions
         uses: actions/upload-artifact@v4
         with:
-          name: sdk-1.3-hplip-mt7621-intercept
-          path: sdk/bin/packages/
+          name: hplip-mt7621-sdk1.5
+          path: ./output/*
